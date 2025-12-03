@@ -1,6 +1,6 @@
-# mindcrank
+# mindcrank: a deck simulator
 
-> Monte Carlo simulations for Magic the Gathering
+> Monte Carlo modeling for Magic the Gathering deck compositions
 
 ## What is a Monte Carlo simulation
 
