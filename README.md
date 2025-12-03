@@ -1,4 +1,4 @@
-# mtg-sim
+# mindcrank
 
 > Monte Carlo simulations for Magic the Gathering
 
@@ -39,17 +39,14 @@ On this second set of runs, I added the ability to detect opening hand wins. The
 
 ```sh
 ☁  mtg-sim [main] ⚡  go run main.go
-🔮 mtg-sim booting up
 📊 results:
 {attempts:10000000 averageDrawsToWin:27.6532424 openingHandWins:31032 averageOpeningHandWins:0.0031032}
 
 ☁  mtg-sim [main] ⚡  go run main.go
-🔮 mtg-sim booting up
 📊 results:
 {attempts:10000000 averageDrawsToWin:27.6540736 openingHandWins:31077 averageOpeningHandWins:0.0031077}
 
 ☁  mtg-sim [main] ⚡  go run main.go
-🔮 mtg-sim booting up
 📊 results:
 {attempts:10000000 averageDrawsToWin:27.6540033 openingHandWins:30667 averageOpeningHandWins:0.0030667}
 ```
@@ -59,17 +56,14 @@ Ya, I jazzed up the log lines. _The hood gonna love it._
 This set of runs has 4 combo pieces in it but kept the same concentration of lands and the same 2 cards required to solidify a win.
 
 ```sh
-mtg-sim [main] ⚡  go run main.go 
-🔮 mtg-sim booting up
+[main] ⚡  go run main.go 
 📊 results:
 {attempts:10000000 averageDrawsToWin:23.3397672
 openingHandWins:175493 averageOpeningHandWins:0.0175493}
-☁  mtg-sim [main] ⚡  go run main.go
-🔮 mtg-sim booting up
+[main] ⚡  go run main.go
 📊 results:
 {attempts:10000000 averageDrawsToWin:23.3396951 openingHandWins:175921 averageOpeningHandWins:0.0175921}
-☁  mtg-sim [main] ⚡  go run main.go
-🔮 mtg-sim booting up
+[main] ⚡  go run main.go
 📊 results:
 {attempts:10000000 averageDrawsToWin:23.3407488 openingHandWins:175475 averageOpeningHandWins:0.0175475}
 ```
