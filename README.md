@@ -14,6 +14,32 @@ This is all necessary because Magic is a _[stochastic process](https://en.wikipe
 
 To start, I setup a Monte Carlo simulation that modeled a 2 card win condition (let’s say it’s our bff Thoracle/Consult) in the 99 of a deck with 37 land cards.
 
+## Usage
+
+```sh
+go run . -h
+```
+
+```text
+Usage of mindcrank:
+  -combo-pieces int
+        number of combo pieces in the deck (default 4)
+  -deck-size int
+        number of cards in the deck (default 99)
+  -lands int
+        number of lands in the deck (default 37)
+  -required-combos int
+        combo pieces required to win (default 2)
+  -simulations int
+        number of simulations to run (default 10000000)
+```
+
+Example run:
+
+```sh
+go run . -simulations 1000000 -lands 36 -combo-pieces 4 -required-combos 2
+```
+
 Simulations had an average turn count at 27 after drawing the initial 7 cards, meaning that for a 2 card combo, you have to dig down an average of 27 cards after your opening hand.
 
 ```sh

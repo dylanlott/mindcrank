@@ -7,10 +7,13 @@ package main
 // is a win-con and doesn't attempt to discern if the combo was castable.
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
+	"runtime"
 	"sync"
+	"time"
 )
 
 // Card holds the information for a card in the game
@@ -26,6 +29,15 @@ type Results struct {
 	openingHandWins        int64
 	averageOpeningHandWins float64
 	averageOpeningLands    float64
+}
+
+// Config holds the configuration for a simulation run.
+type Config struct {
+	lands    int
+	combos   int
+	required int
+	runs     int
+	seed     int64
 }
 
 // Simulation holds the results of the sim's run
@@ -46,10 +58,39 @@ type Simulation struct {
 // both combo pieces snd records the turn count that happened.
 func main() {
 	fmt.Println("🔮 mtg-sim booting up")
-	var numSimulations = 10_000_000
-	var input = make(chan Simulation, 10_000)
+	landsFlag := flag.Int("lands", 37, "number of lands in the deck")
+	combosFlag := flag.Int("combos", 4, "number of combo pieces in the deck")
+	requiredFlag := flag.Int("required", 2, "number of combo pieces required for a win")
+	runsFlag := flag.Int("runs", 10_000_000, "number of simulations to run")
+	seedFlag := flag.Int64("seed", 0, "random seed (0 uses current time)")
+	flag.Parse()
 
-	results, err := runScenario(input, numSimulations)
+	seed := *seedFlag
+	if seed == 0 {
+		seed = time.Now().UnixNano()
+	}
+	cfg := Config{
+		lands:    *landsFlag,
+		combos:   *combosFlag,
+		required: *requiredFlag,
+		runs:     *runsFlag,
+		seed:     seed,
+	}
+
+	if cfg.required > cfg.combos {
+		log.Fatalf("required combo pieces (%d) cannot exceed total combo pieces (%d)", cfg.required, cfg.combos)
+	}
+	if cfg.lands+cfg.combos > 99 {
+		log.Fatalf("lands (%d) + combos (%d) cannot exceed deck size (99)", cfg.lands, cfg.combos)
+	}
+	if cfg.runs < 1 {
+		log.Fatalf("runs must be at least 1")
+	}
+
+	fmt.Printf("🎲 RNG seed: %d\n", cfg.seed)
+	rand.Seed(cfg.seed)
+
+	results, err := runScenario(cfg)
 	if err != nil {
 		log.Fatalf("error: %+v", err)
 	}
@@ -58,72 +99,66 @@ func main() {
 }
 
 // runScenario runs a deck simulations a given number of times.
-func runScenario(input chan Simulation, numSimulations int) (Results, error) {
+func runScenario(cfg Config) (Results, error) {
 	var results = Results{}
 
-	wg := &sync.WaitGroup{}
-	wg.Add(numSimulations)
+	workerCount := runtime.NumCPU()
+	jobs := make(chan struct{}, workerCount)
+	output := make(chan Simulation, 10_000)
 
-	go func(input chan Simulation) {
-		for i := 0; i < numSimulations; i++ {
-			deck := createDeck()
-			input <- runSimulation(deck)
-		}
-	}(input)
-
-	var drawCount = []int64{}
-	var openingLandCount = []int64{}
-	var openingWinCount = 0
-	go func() {
-		for {
-			select {
-			case sim := <-input:
-				results.attempts++
-				// record an opening hand win
-				if sim.openingHandWin {
-					openingWinCount++
-				}
-				// record draws to required win
-				drawCount = append(drawCount, sim.drawsToWinCon)
-				// record opening hand lands
-				openingLandCount = append(openingLandCount, int64(sim.openingHandLands))
-				wg.Done()
+	workers := &sync.WaitGroup{}
+	workers.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer workers.Done()
+			for range jobs {
+				deck := createDeck(cfg)
+				output <- runSimulation(deck, cfg.required)
 			}
+		}()
+	}
+
+	go func() {
+		for i := 0; i < cfg.runs; i++ {
+			jobs <- struct{}{}
 		}
+		close(jobs)
+		workers.Wait()
+		close(output)
 	}()
 
-	wg.Wait()
+	var drawSum int64
+	var landSum int64
+	var openingWinCount int64
 
-	// calculate the drawSum and average of draw counts
-	var drawSum int64 = 0
-	for _, value := range drawCount {
-		drawSum += value
+	for sim := range output {
+		results.attempts++
+		if sim.openingHandWin {
+			openingWinCount++
+		}
+		drawSum += sim.drawsToWinCon
+		landSum += int64(sim.openingHandLands)
 	}
 
-	// calculate opening land averages
-	var landSum int64 = 0
-	for _, val := range openingLandCount {
-		landSum += val
+	if results.attempts > 0 {
+		results.averageDrawsToWin = float64(drawSum) / float64(results.attempts)
+		results.averageOpeningHandWins = float64(openingWinCount) / float64(results.attempts)
+		results.openingHandWins = openingWinCount
+		results.averageOpeningLands = float64(landSum) / float64(results.attempts)
 	}
-
-	// calculate averages for each category
-	results.averageDrawsToWin = float64(drawSum) / float64(len(drawCount))
-	results.averageOpeningHandWins = float64(openingWinCount) / float64(results.attempts)
-	results.openingHandWins = int64(openingWinCount)
-	results.averageOpeningLands = float64(landSum) / float64(results.attempts)
 
 	return results, nil
 }
 
 // createDeck creates a deck with the default setup of lands,
 // non-lands, and combo pieces.
-func createDeck() []Card {
+func createDeck(cfg Config) []Card {
 	// setup the distribution of cards for our simulation
-	var numLands = 37
+	var numLands = cfg.lands
 	// set the number of non-lands to the rest of the deck
 	var numNonLands = 99 - numLands
 	// assumes the commander is not a part of the combo strategy
-	var numComboPieces = 4
+	var numComboPieces = cfg.combos
 
 	// create a deck
 	var deck []Card
@@ -166,9 +201,9 @@ func shuffleDeck(deck []Card) []Card {
 
 // runSimulation starts drawing down until it hits a win con and
 // then records the results of the simulation for later analysis
-func runSimulation(deck []Card) Simulation {
+func runSimulation(deck []Card, required int) Simulation {
 	var drawCount int64 = 0
-	hand, deck := deck[:6], deck[7:]
+	hand, deck := deck[:7], deck[7:]
 
 	openingLands := 0
 	// check lands in opening hand
@@ -178,24 +213,26 @@ func runSimulation(deck []Card) Simulation {
 		}
 	}
 
-	if checkComboWin(hand, 2) {
+	if checkComboWin(hand, required) {
 		return Simulation{
-			drawsToWinCon:  drawCount,
-			openingHandWin: true,
+			drawsToWinCon:    drawCount,
+			openingHandWin:   true,
+			openingHandLands: openingLands,
 		}
 	}
 
-	for i := 0; i < len(deck)-len(hand); i++ {
+	for len(deck) > 0 {
 		drawCount++
 		// draw
 		drawn := deck[0]
 		deck = deck[1:]
 		hand = append(hand, drawn)
 		// check if enough combo pieces have been hit
-		if checkComboWin(hand, 2) {
+		if checkComboWin(hand, required) {
 			return Simulation{
-				drawsToWinCon:  drawCount,
-				openingHandWin: false,
+				drawsToWinCon:    drawCount,
+				openingHandWin:   false,
+				openingHandLands: openingLands,
 			}
 		}
 	}
@@ -209,8 +246,8 @@ func runSimulation(deck []Card) Simulation {
 
 // checks if the required number of combo cards has been drawn
 // into hand for a naive win-con check
-func checkComboWin(hand []Card, required int64) bool {
-	var count int64 = 0
+func checkComboWin(hand []Card, required int) bool {
+	var count int = 0
 	for i := 0; i < len(hand); i++ {
 		if hand[i].combo {
 			count++
