@@ -7,6 +7,7 @@ package main
 // is a win-con and doesn't attempt to discern if the combo was castable.
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -33,6 +34,7 @@ type Results struct {
 
 // Config holds the configuration for a simulation run.
 type Config struct {
+	deckSize int
 	lands    int
 	combos   int
 	required int
@@ -58,6 +60,7 @@ type Simulation struct {
 // both combo pieces snd records the turn count that happened.
 func main() {
 	fmt.Println("🔮 mtg-sim booting up")
+	deckSizeFlag := flag.Int("deck-size", 99, "number of cards in the deck")
 	landsFlag := flag.Int("lands", 37, "number of lands in the deck")
 	combosFlag := flag.Int("combos", 4, "number of combo pieces in the deck")
 	requiredFlag := flag.Int("required", 2, "number of combo pieces required for a win")
@@ -70,6 +73,7 @@ func main() {
 		seed = time.Now().UnixNano()
 	}
 	cfg := Config{
+		deckSize: *deckSizeFlag,
 		lands:    *landsFlag,
 		combos:   *combosFlag,
 		required: *requiredFlag,
@@ -77,18 +81,11 @@ func main() {
 		seed:     seed,
 	}
 
-	if cfg.required > cfg.combos {
-		log.Fatalf("required combo pieces (%d) cannot exceed total combo pieces (%d)", cfg.required, cfg.combos)
-	}
-	if cfg.lands+cfg.combos > 99 {
-		log.Fatalf("lands (%d) + combos (%d) cannot exceed deck size (99)", cfg.lands, cfg.combos)
-	}
-	if cfg.runs < 1 {
-		log.Fatalf("runs must be at least 1")
+	if err := validateConfig(cfg); err != nil {
+		log.Fatalf("invalid config: %v", err)
 	}
 
 	fmt.Printf("🎲 RNG seed: %d\n", cfg.seed)
-	rand.Seed(cfg.seed)
 
 	results, err := runScenario(cfg)
 	if err != nil {
@@ -103,7 +100,7 @@ func runScenario(cfg Config) (Results, error) {
 	var results = Results{}
 
 	workerCount := runtime.NumCPU()
-	jobs := make(chan struct{}, workerCount)
+	jobs := make(chan int, workerCount)
 	output := make(chan Simulation, 10_000)
 
 	workers := &sync.WaitGroup{}
@@ -111,8 +108,9 @@ func runScenario(cfg Config) (Results, error) {
 	for i := 0; i < workerCount; i++ {
 		go func() {
 			defer workers.Done()
-			for range jobs {
-				deck := createDeck(cfg)
+			for simIndex := range jobs {
+				rng := rand.New(rand.NewSource(simSeed(cfg.seed, simIndex)))
+				deck := createDeck(cfg, rng)
 				output <- runSimulation(deck, cfg.required)
 			}
 		}()
@@ -120,7 +118,7 @@ func runScenario(cfg Config) (Results, error) {
 
 	go func() {
 		for i := 0; i < cfg.runs; i++ {
-			jobs <- struct{}{}
+			jobs <- i
 		}
 		close(jobs)
 		workers.Wait()
@@ -152,11 +150,11 @@ func runScenario(cfg Config) (Results, error) {
 
 // createDeck creates a deck with the default setup of lands,
 // non-lands, and combo pieces.
-func createDeck(cfg Config) []Card {
+func createDeck(cfg Config, rng *rand.Rand) []Card {
 	// setup the distribution of cards for our simulation
 	var numLands = cfg.lands
 	// set the number of non-lands to the rest of the deck
-	var numNonLands = 99 - numLands
+	var numNonLands = cfg.deckSize - numLands
 	// assumes the commander is not a part of the combo strategy
 	var numComboPieces = cfg.combos
 
@@ -188,12 +186,12 @@ func createDeck(cfg Config) []Card {
 		})
 	}
 
-	return shuffleDeck(deck)
+	return shuffleDeck(deck, rng)
 }
 
 // shuffleDeck shuffles a slice of Cards and returns the shuffled slice
-func shuffleDeck(deck []Card) []Card {
-	rand.Shuffle(len(deck), func(i, j int) {
+func shuffleDeck(deck []Card, rng *rand.Rand) []Card {
+	rng.Shuffle(len(deck), func(i, j int) {
 		deck[i], deck[j] = deck[j], deck[i]
 	})
 	return deck
@@ -257,4 +255,38 @@ func checkComboWin(hand []Card, required int) bool {
 		}
 	}
 	return false
+}
+
+func validateConfig(cfg Config) error {
+	if cfg.deckSize < 7 {
+		return errors.New("deck size must be at least 7")
+	}
+	if cfg.lands < 0 {
+		return errors.New("lands cannot be negative")
+	}
+	if cfg.combos < 0 {
+		return errors.New("combos cannot be negative")
+	}
+	if cfg.required < 1 {
+		return errors.New("required combo pieces must be at least 1")
+	}
+	if cfg.required > cfg.combos {
+		return fmt.Errorf("required combo pieces (%d) cannot exceed total combo pieces (%d)", cfg.required, cfg.combos)
+	}
+	if cfg.lands+cfg.combos > cfg.deckSize {
+		return fmt.Errorf("lands (%d) + combos (%d) cannot exceed deck size (%d)", cfg.lands, cfg.combos, cfg.deckSize)
+	}
+	if cfg.runs < 1 {
+		return errors.New("runs must be at least 1")
+	}
+	return nil
+}
+
+func simSeed(baseSeed int64, simIndex int) int64 {
+	// Mix the base seed with simulation index for deterministic, distinct RNG streams.
+	x := uint64(baseSeed) + uint64(simIndex) + 0x9e3779b97f4a7c15
+	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
+	x = (x ^ (x >> 27)) * 0x94d049bb133111eb
+	x ^= x >> 31
+	return int64(x)
 }

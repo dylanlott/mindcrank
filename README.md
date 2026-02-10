@@ -22,22 +22,30 @@ go run . -h
 
 ```text
 Usage of mindcrank:
-  -combo-pieces int
-        number of combo pieces in the deck (default 4)
   -deck-size int
         number of cards in the deck (default 99)
+  -combos int
+        number of combo pieces in the deck (default 4)
   -lands int
         number of lands in the deck (default 37)
-  -required-combos int
+  -required int
         combo pieces required to win (default 2)
-  -simulations int
+  -runs int
         number of simulations to run (default 10000000)
+  -seed int
+        random seed (0 uses current time)
 ```
 
 Example run:
 
 ```sh
-go run . -simulations 1000000 -lands 36 -combo-pieces 4 -required-combos 2
+go run . -runs 1000000 -lands 36 -combos 4 -required 2
+```
+
+Deterministic run:
+
+```sh
+go run . -runs 1000000 -lands 36 -combos 4 -required 2 -seed 42
 ```
 
 Simulations had an average turn count at 27 after drawing the initial 7 cards, meaning that for a 2 card combo, you have to dig down an average of 27 cards after your opening hand.
@@ -96,7 +104,7 @@ openingHandWins:175493 averageOpeningHandWins:0.0175493}
 
 ## Limitations and configuration
 
-The simulator currently only distinguishes between lands and non lands, and only non lands can be combo pieces. There’s a configurable number of required combo pieces, number of lands per deck, and number of combo pieces included. The simulator also doesn’t care about lands being drawn, only combo pieces. Instead, the land/non-land distinction has been added for future sampling of opening hands and land drop curves.
+The simulator currently only distinguishes between lands and non lands, and only non lands can be combo pieces. There’s a configurable deck size, required combo pieces, number of lands per deck, and number of combo pieces included. The simulator also doesn’t care about lands being drawn, only combo pieces. Instead, the land/non-land distinction has been added for future sampling of opening hands and land drop curves.
 
 ## Synthesis
 
