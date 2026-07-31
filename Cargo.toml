@@ -2,7 +2,7 @@
 name = "mindcrank"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.97"
 description = "A small, extensible library for composing and running Monte Carlo simulations of Magic: The Gathering decks"
 license = "MIT OR Apache-2.0"
 

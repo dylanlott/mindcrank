@@ -21,6 +21,12 @@ MTG decks.
 - Explicit wins and misses instead of treating the simulation horizon as a win
 - A tag-based card and deck model
 
+## Requirements
+
+Rust 1.97 or newer, on edition 2024. `rust-toolchain.toml` pins this repo to the
+stable channel, so `cargo build` and `cargo test` use stable even when your
+default toolchain is something else.
+
 ## Mindcrank simulation skill
 
 `.claude/skills/mindcrank-simulate/` is an agent skill for running a simulation
