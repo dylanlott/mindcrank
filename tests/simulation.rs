@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use approx::assert_abs_diff_eq;
 use mindcrank::{
-    AnyOf, BottomHeuristic, Card, Deck, KOfTag, MonteCarloParams, MulliganPolicy, Params,
-    TwoCardSet, WinCondition, monte_carlo, run_once,
+    AnyOf, BottomHeuristic, Card, Deck, KOfTag, KeepIfLandsBetween, MonteCarloParams,
+    MulliganPolicy, Params, TwoCardSet, WinCondition, monte_carlo, run_once,
 };
 
 #[test]
@@ -69,6 +69,19 @@ fn london_bottoms_cards_into_the_library() {
     assert_eq!(outcome.kept, 1);
     assert_eq!(outcome.draws_after_opening, 1);
     assert_eq!(outcome.turns_to_win, Some(1));
+}
+
+#[test]
+fn keeping_at_zero_mulligans_bottoms_nothing() {
+    let deck = Deck::new(vec![Card::new("Filler"); 20]);
+    let win = KOfTag::new("missing", 1);
+    let keep_everything = KeepIfLandsBetween::new(0, 7);
+    let mut params = Params::new(&deck, &win)
+        .london_mulligan(&keep_everything, 3)
+        .with_seed(4);
+    params.max_turns = 0;
+
+    assert_eq!(run_once(&params).kept, 7);
 }
 
 #[test]

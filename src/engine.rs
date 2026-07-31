@@ -119,6 +119,10 @@ fn normalized_bottom_indices(
     requested: Vec<usize>,
     win: &dyn WinCondition,
 ) -> Vec<usize> {
+    if count == 0 {
+        return Vec::new();
+    }
+
     let mut seen = HashSet::with_capacity(count);
     let mut indices = Vec::with_capacity(count);
 
