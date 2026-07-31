@@ -63,6 +63,41 @@ Run the complete example:
 cargo run --release --example two_card_combo
 ```
 
+That deck is 99 cards — 37 lands, one Thassa's Oracle, one Demonic Consultation,
+and 60 inert filler cards — kept on two to four lands with up to three London
+mulligans, over one million trials on a fixed seed:
+
+```
+Trials: 1000000
+Wins by turn 50: 32.84%
+Average draws after opening (wins): 31.62
+Opening win rate: 0.5770%
+Average opening lands: 2.83
+Average turns to win (wins): 31.62
+```
+
+`distribution_draws_to_win` holds the shape behind that headline. Turn 0 is the
+kept opening hand, and the draws and turns figures coincide here only because
+`draws_per_turn` is 1:
+
+| Turn | Both pieces in hand |
+| ---- | ------------------- |
+| 0    | 0.58%               |
+| 3    | 1.05%               |
+| 5    | 1.48%               |
+| 10   | 2.89%               |
+| 20   | 7.27%               |
+| 30   | 13.71%              |
+| 50   | 32.84%              |
+
+Two singletons in 99 cards with no way to find them is a deliberately punishing
+baseline, and it doubles as the engine's correctness check: 32.84% by turn 50
+sits on the hypergeometric odds of both cards falling in the top 57 of the deck,
+(57/99)(56/98) = 32.90%, a shade under because mulligans see fewer cards. The
+averages cover winning trials only, so read them next to the win rate rather
+than alone. Real decks close the gap with tutors and draw spells — that is what
+the tag model and custom win conditions exist to express.
+
 Run the test suite:
 
 ```sh
