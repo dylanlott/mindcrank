@@ -21,6 +21,15 @@ MTG decks.
 - Explicit wins and misses instead of treating the simulation horizon as a win
 - A tag-based card and deck model
 
+## Mindcrank simulation skill
+
+`.claude/skills/mindcrank-simulate/` is an agent skill for running a simulation
+against a decklist you paste in. Point a coding agent at this repo and ask it to
+read `.claude/skills/mindcrank-simulate/SKILL.md`; Claude Code discovers the
+skill automatically. It covers tagging a decklist, choosing a win condition and
+mulligan policy, and reading the results, and ships a template harness that
+parses Arena and Moxfield exports.
+
 ## Example
 
 ```rust
