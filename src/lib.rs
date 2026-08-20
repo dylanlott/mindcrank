@@ -12,6 +12,8 @@ mod metrics;
 mod mulligan;
 mod win_condition;
 
+pub mod arena;
+
 pub use card::Card;
 pub use deck::{Deck, count_tag};
 pub use engine::{MonteCarloParams, Params, monte_carlo, run_once};

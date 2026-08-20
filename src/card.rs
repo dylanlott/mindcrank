@@ -4,8 +4,8 @@ use std::collections::HashSet;
 ///
 /// Typical tags include `land`, `tutor`, `draw`, `combo:oracle`, and
 /// `combo:consult`.
-/// 
-/// Tags are intended to be flexible descriptors that can capture various 
+///
+/// Tags are intended to be flexible descriptors that can capture various
 /// aspects of a card's role or function within a deck.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Card {

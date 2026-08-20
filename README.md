@@ -104,6 +104,25 @@ averages cover winning trials only, so read them next to the win rate rather
 than alone. Real decks close the gap with tutors and draw spells — that is what
 the tag model and custom win conditions exist to express.
 
+## Competitive arena
+
+The `arena` module runs multiple deck plans through balanced two-player
+schedules. Its first model, `GoldfishRaceModel`, compares when each deck reaches
+its existing `WinCondition`; it deliberately does not claim to model opposing
+interaction. Adjacent Monte Carlo trials reuse the same deck-specific shuffles
+while swapping the starting player, and every reported example trial can be
+replayed from the run seed and `TrialId`.
+
+Run the three-deck round-robin example:
+
+```sh
+cargo run --release --example round_robin
+```
+
+See [`docs/interactive-simulation-plan.md`](docs/interactive-simulation-plan.md)
+for the next slice: a coarse turn model with pilots, threats, protection, and
+disruption.
+
 Run the test suite:
 
 ```sh
