@@ -7,6 +7,7 @@ pub struct TrialOutcome {
     /// Draws made after the kept opening hand. For a miss, this is the number
     /// of draws made before the simulation horizon ended.
     pub draws_after_opening: usize,
+    /// Whether or not the opening hand had a win in it
     pub opening_win: bool,
     /// Lands in the provisional hand that was kept, before bottoming.
     pub opening_lands: usize,
