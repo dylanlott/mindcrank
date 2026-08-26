@@ -1,9 +1,9 @@
 ---
 slug: commander-pod-simulations-with-recursive-response-priority
 title: Commander pod simulations with recursive response priority
-status: open
+status: in_progress
 created: 2026-08-20
-updated: 2026-08-20
+updated: 2026-08-26
 ---
 
 # Thread: Commander pod simulations with recursive response priority
@@ -46,9 +46,13 @@ Important locked decisions:
 - incremental aggregation; do not store every trial
 - retain the current two-player and single-deck workflows
 
-The working tree also contains pre-existing, uncommitted user edits to the
-README title and a comment in `src/metrics.rs`. Preserve them unless explicitly
-directed otherwise.
+Package 1 was completed on 2026-08-26. The arena now uses dynamic contests,
+cyclic seatings, contest/sample/seating trial coordinates, typed simulator
+failures, and vector-backed reports. The two-player round robin remains
+supported through compatibility aliases, while four-seat aggregation and
+multiplayer goldfish tie handling are covered by integration tests.
+
+Preserve unrelated user work unless explicitly directed otherwise.
 
 ## References
 
@@ -63,12 +67,12 @@ directed otherwise.
 
 ## Next Steps
 
-1. Read `docs/interactive-simulation-plan.md` completely.
-2. Run `git status`, `cargo test --all-targets`, and preserve unrelated changes.
-3. Execute Package 1 only: generalize arena primitives, reports, errors, and the
-   goldfish model to dynamic contests.
-4. Keep Package 1 atomic and green before starting pod schedules.
-5. Verify formatting, tests, Clippy, rustdoc, and worker-count reproducibility.
+1. Execute Package 2: add fixed four-player pod schedules and explicit seating
+   policies.
+2. Make all 24 permutations the default for four-player pods while retaining
+   canonical and cyclic policies for tests and faster approximations.
+3. Preserve common competitor RNG streams across every seating of one sample.
+4. Keep Package 2 atomic and green before extracting opening-hand setup.
 
 Resume this context with:
 

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::{Competitor, MatchResult, Matchup, MatchupId, TrialId, TrialRecord};
+use super::{ArenaError, Competitor, Contest, ContestId, ContestResult, TrialId, TrialRecord};
 
 /// Wins, losses, and draws from one competitor's perspective.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -58,27 +58,73 @@ pub struct ConfidenceInterval {
     pub high: f64,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutcomeExamples {
-    /// One replayable winning trial for each competitor, when observed.
-    pub winner: [Option<TrialId>; 2],
+    /// One replayable winning trial per canonical competitor, when observed.
+    pub winner: Vec<Option<TrialId>>,
     pub draw: Option<TrialId>,
 }
 
+impl OutcomeExamples {
+    fn new(competitor_count: usize) -> Self {
+        Self {
+            winner: vec![None; competitor_count],
+            draw: None,
+        }
+    }
+}
+
+/// Aggregated results for one contest.
 #[derive(Clone, Debug, PartialEq)]
-pub struct MatchupReport {
-    pub matchup_id: MatchupId,
-    pub competitor_ids: [String; 2],
+pub struct ContestReport {
+    pub contest_id: ContestId,
+    /// Canonical competitor order, independent of seating.
+    pub competitor_ids: Vec<String>,
     /// Overall records in the same order as `competitor_ids`.
-    pub records: [Record; 2],
-    /// Records restricted to games where the corresponding competitor started.
-    pub on_play: [Record; 2],
-    /// Records restricted to games where the corresponding competitor did not start.
-    pub on_draw: [Record; 2],
+    pub records: Vec<Record>,
+    /// `records_by_seat[contest slot][game seat]`.
+    pub records_by_seat: Vec<Vec<Record>>,
     pub average_turns: Option<f64>,
-    pub win_rate_ci95: [Option<ConfidenceInterval>; 2],
+    pub win_rate_ci95: Vec<Option<ConfidenceInterval>>,
     pub examples: OutcomeExamples,
 }
+
+impl ContestReport {
+    /// Validates all seat-aligned vectors before a report is consumed.
+    pub fn validate(&self) -> Result<(), ArenaError> {
+        let expected = self.competitor_ids.len();
+        validate_len(self.contest_id, "records", expected, self.records.len())?;
+        validate_len(
+            self.contest_id,
+            "records_by_seat",
+            expected,
+            self.records_by_seat.len(),
+        )?;
+        for (contest_slot, records) in self.records_by_seat.iter().enumerate() {
+            validate_len(
+                self.contest_id,
+                &format!("records_by_seat[{contest_slot}]"),
+                expected,
+                records.len(),
+            )?;
+        }
+        validate_len(
+            self.contest_id,
+            "win_rate_ci95",
+            expected,
+            self.win_rate_ci95.len(),
+        )?;
+        validate_len(
+            self.contest_id,
+            "examples.winner",
+            expected,
+            self.examples.winner.len(),
+        )
+    }
+}
+
+/// Compatibility name for two-player callers. Storage is now dynamic.
+pub type MatchupReport = ContestReport;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StandingsEntry {
@@ -92,105 +138,155 @@ pub struct StandingsEntry {
 pub struct ArenaReport {
     /// The resolved seed, including when the run was created without one.
     pub seed: u64,
-    pub trials_per_matchup: usize,
-    pub matchups: Vec<MatchupReport>,
+    pub samples_per_contest: usize,
+    /// Total simulated games across every contest and cyclic seating.
+    pub games: usize,
+    pub contests: Vec<ContestReport>,
     /// Sorted by score rate, then win rate, then competitor ID.
     pub standings: Vec<StandingsEntry>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct MatchupAccumulator {
-    records: [Record; 2],
-    on_play: [Record; 2],
-    on_draw: [Record; 2],
+impl ArenaReport {
+    /// Compatibility accessor for callers that still describe contests as matchups.
+    pub fn matchups(&self) -> &[MatchupReport] {
+        &self.contests
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ContestAccumulator {
+    contest_id: ContestId,
+    records: Vec<Record>,
+    records_by_seat: Vec<Vec<Record>>,
     turns: u128,
-    trials: usize,
+    games: usize,
     examples: OutcomeExamples,
 }
 
-impl MatchupAccumulator {
-    pub(crate) fn record(&mut self, trial: &TrialRecord) {
-        self.trials += 1;
-        self.turns += trial.outcome.turns as u128;
-
-        let starter = trial.context.starting_seat;
-        let follower = 1 - starter;
-        match trial.outcome.result {
-            MatchResult::Winner { seat } => {
-                let loser = 1 - seat;
-                self.records[seat].record_win();
-                self.records[loser].record_loss();
-
-                if seat == starter {
-                    self.on_play[seat].record_win();
-                    self.on_draw[loser].record_loss();
-                } else {
-                    self.on_draw[seat].record_win();
-                    self.on_play[loser].record_loss();
-                }
-                keep_first(&mut self.examples.winner[seat], trial.context.id);
-            }
-            MatchResult::Draw => {
-                for record in &mut self.records {
-                    record.record_draw();
-                }
-                self.on_play[starter].record_draw();
-                self.on_draw[follower].record_draw();
-                keep_first(&mut self.examples.draw, trial.context.id);
-            }
+impl ContestAccumulator {
+    pub(crate) fn new(contest_id: ContestId, seat_count: usize) -> Self {
+        Self {
+            contest_id,
+            records: vec![Record::default(); seat_count],
+            records_by_seat: vec![vec![Record::default(); seat_count]; seat_count],
+            turns: 0,
+            games: 0,
+            examples: OutcomeExamples::new(seat_count),
         }
     }
 
-    pub(crate) fn merge(&mut self, other: Self) {
-        for seat in 0..2 {
-            self.records[seat].merge(other.records[seat]);
-            self.on_play[seat].merge(other.on_play[seat]);
-            self.on_draw[seat].merge(other.on_draw[seat]);
-            keep_option(&mut self.examples.winner[seat], other.examples.winner[seat]);
+    pub(crate) fn record(&mut self, trial: &TrialRecord) -> Result<(), ArenaError> {
+        let seat_count = self.records.len();
+        trial
+            .context
+            .seating
+            .validate(self.contest_id, seat_count)?;
+        self.games += 1;
+        self.turns += trial.outcome.turns as u128;
+
+        match trial.outcome.result {
+            ContestResult::Winner { seat: winner_seat } => {
+                let winner_slot = trial.context.seating.contest_slots[winner_seat];
+                for (seat, &contest_slot) in trial.context.seating.contest_slots.iter().enumerate()
+                {
+                    if seat == winner_seat {
+                        self.records[contest_slot].record_win();
+                        self.records_by_seat[contest_slot][seat].record_win();
+                    } else {
+                        self.records[contest_slot].record_loss();
+                        self.records_by_seat[contest_slot][seat].record_loss();
+                    }
+                }
+                keep_first(&mut self.examples.winner[winner_slot], trial.context.id);
+            }
+            ContestResult::Draw => {
+                for (seat, &contest_slot) in trial.context.seating.contest_slots.iter().enumerate()
+                {
+                    self.records[contest_slot].record_draw();
+                    self.records_by_seat[contest_slot][seat].record_draw();
+                }
+                keep_first(&mut self.examples.draw, trial.context.id);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn merge(&mut self, other: Self) -> Result<(), ArenaError> {
+        let expected = self.records.len();
+        validate_len(
+            self.contest_id,
+            "accumulator.records",
+            expected,
+            other.records.len(),
+        )?;
+        validate_len(
+            self.contest_id,
+            "accumulator.records_by_seat",
+            expected,
+            other.records_by_seat.len(),
+        )?;
+
+        for contest_slot in 0..expected {
+            validate_len(
+                self.contest_id,
+                &format!("accumulator.records_by_seat[{contest_slot}]"),
+                expected,
+                other.records_by_seat[contest_slot].len(),
+            )?;
+            self.records[contest_slot].merge(other.records[contest_slot]);
+            for seat in 0..expected {
+                self.records_by_seat[contest_slot][seat]
+                    .merge(other.records_by_seat[contest_slot][seat]);
+            }
+            keep_option(
+                &mut self.examples.winner[contest_slot],
+                other.examples.winner[contest_slot],
+            );
         }
         keep_option(&mut self.examples.draw, other.examples.draw);
         self.turns += other.turns;
-        self.trials += other.trials;
+        self.games += other.games;
+        Ok(())
     }
 
     pub(crate) fn into_report(
         self,
-        matchup: &Matchup,
+        contest: &Contest,
         competitors: &[Competitor<'_>],
-    ) -> MatchupReport {
-        let competitor_ids = matchup
+    ) -> Result<ContestReport, ArenaError> {
+        let competitor_ids = contest
             .competitor_indices
-            .map(|index| competitors[index].id.clone());
-        let win_rate_ci95 = self.records.map(|record| record.win_rate_ci95());
+            .iter()
+            .map(|&index| competitors[index].id.clone())
+            .collect();
+        let win_rate_ci95 = self.records.iter().map(Record::win_rate_ci95).collect();
 
-        MatchupReport {
-            matchup_id: matchup.id,
+        let report = ContestReport {
+            contest_id: contest.id,
             competitor_ids,
             records: self.records,
-            on_play: self.on_play,
-            on_draw: self.on_draw,
-            average_turns: (self.trials > 0).then_some(self.turns as f64 / self.trials as f64),
+            records_by_seat: self.records_by_seat,
+            average_turns: (self.games > 0).then_some(self.turns as f64 / self.games as f64),
             win_rate_ci95,
             examples: self.examples,
-        }
+        };
+        report.validate()?;
+        Ok(report)
     }
 }
 
 pub(crate) fn build_standings(
     competitors: &[Competitor<'_>],
-    matchups: &[MatchupReport],
+    contests: &[ContestReport],
 ) -> Vec<StandingsEntry> {
     let mut records: BTreeMap<&str, Record> = competitors
         .iter()
         .map(|competitor| (competitor.id.as_str(), Record::default()))
         .collect();
 
-    for matchup in matchups {
-        for seat in 0..2 {
-            records
-                .entry(&matchup.competitor_ids[seat])
-                .or_default()
-                .merge(matchup.records[seat]);
+    for contest in contests {
+        for (competitor_id, record) in contest.competitor_ids.iter().zip(&contest.records) {
+            records.entry(competitor_id).or_default().merge(*record);
         }
     }
 
@@ -216,6 +312,24 @@ pub(crate) fn build_standings(
             .then_with(|| left.competitor_id.cmp(&right.competitor_id))
     });
     standings
+}
+
+fn validate_len(
+    contest_id: ContestId,
+    field: &str,
+    expected: usize,
+    actual: usize,
+) -> Result<(), ArenaError> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(ArenaError::InvalidReportShape {
+            contest_id,
+            field: field.to_owned(),
+            expected,
+            actual,
+        })
+    }
 }
 
 fn keep_first(slot: &mut Option<TrialId>, trial_id: TrialId) {

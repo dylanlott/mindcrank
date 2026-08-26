@@ -32,6 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     println!("seed: {}", report.seed);
+    println!(
+        "{} samples per contest; {} total games",
+        report.samples_per_contest, report.games
+    );
     for entry in report.standings {
         println!(
             "{:<16} {:>6.2}% score ({:>6} W / {:>6} L / {:>6} D)",

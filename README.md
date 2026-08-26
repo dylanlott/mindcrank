@@ -106,12 +106,13 @@ the tag model and custom win conditions exist to express.
 
 ## Competitive arena
 
-The `arena` module runs multiple deck plans through balanced two-player
-schedules. Its first model, `GoldfishRaceModel`, compares when each deck reaches
-its existing `WinCondition`; it deliberately does not claim to model opposing
-interaction. Adjacent Monte Carlo trials reuse the same deck-specific shuffles
-while swapping the starting player, and every reported example trial can be
-replayed from the run seed and `TrialId`.
+The `arena` module runs deck plans through dynamic contests and cyclically
+balanced seatings. Its first model, `GoldfishRaceModel`, compares when each deck
+reaches its existing `WinCondition` across any number of players; it deliberately
+does not claim to model opposing interaction. `ArenaMonteCarlo::new(n)` runs `n`
+random samples per contest, reusing each deck-specific shuffle across every
+cyclic seating, and every reported example can be replayed from the run seed and
+its contest/sample/seating `TrialId`.
 
 Run the three-deck round-robin example:
 

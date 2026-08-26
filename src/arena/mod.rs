@@ -13,9 +13,11 @@ use std::fmt;
 
 use crate::Params;
 
-pub use model::{GoldfishRaceModel, MatchSimulator, TiePolicy};
+pub use model::ContestSimulator as MatchSimulator;
+pub use model::{ContestSimulator, GoldfishRaceModel, TiePolicy};
 pub use report::{
-    ArenaReport, ConfidenceInterval, MatchupReport, OutcomeExamples, Record, StandingsEntry,
+    ArenaReport, ConfidenceInterval, ContestReport, MatchupReport, OutcomeExamples, Record,
+    StandingsEntry,
 };
 pub use runner::ArenaMonteCarlo;
 pub use schedule::{RoundRobin, Schedule};
@@ -57,50 +59,143 @@ impl fmt::Debug for Competitor<'_> {
     }
 }
 
-/// Identifies one scheduled pairing within a schedule.
+/// Identifies one scheduled contest within a schedule.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct MatchupId(pub u64);
+pub struct ContestId(pub u64);
 
-impl fmt::Display for MatchupId {
+impl fmt::Display for ContestId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "m{}", self.0)
+        write!(formatter, "c{}", self.0)
     }
 }
 
-/// A two-player pairing. Indices address the competitor slice given to a run.
+/// A scheduled group of competitors in canonical, seating-independent order.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Matchup {
-    pub id: MatchupId,
-    pub competitor_indices: [usize; 2],
+pub struct Contest {
+    pub id: ContestId,
+    /// Indices into the competitor slice supplied to an arena run.
+    pub competitor_indices: Vec<usize>,
+}
+
+impl Contest {
+    pub fn new(id: ContestId, competitor_indices: impl Into<Vec<usize>>) -> Self {
+        Self {
+            id,
+            competitor_indices: competitor_indices.into(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.competitor_indices.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.competitor_indices.is_empty()
+    }
+}
+
+/// Maps each game seat to a slot in [`Contest::competitor_indices`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Seating {
+    pub contest_slots: Vec<usize>,
+}
+
+impl Seating {
+    pub fn new(contest_slots: impl Into<Vec<usize>>) -> Self {
+        Self {
+            contest_slots: contest_slots.into(),
+        }
+    }
+
+    /// Creates one cyclic rotation. Seat zero acts first.
+    pub fn cyclic(seat_count: usize, rotation: usize) -> Self {
+        if seat_count == 0 {
+            return Self::new(Vec::new());
+        }
+        Self::new(
+            (0..seat_count)
+                .map(|seat| (seat + rotation) % seat_count)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    pub fn len(&self) -> usize {
+        self.contest_slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.contest_slots.is_empty()
+    }
+
+    /// Returns the game seat occupied by a canonical contest slot.
+    pub fn seat_for_contest_slot(&self, contest_slot: usize) -> Option<usize> {
+        self.contest_slots
+            .iter()
+            .position(|slot| *slot == contest_slot)
+    }
+
+    pub fn validate(&self, contest_id: ContestId, seat_count: usize) -> Result<(), ArenaError> {
+        if self.len() != seat_count {
+            return Err(ArenaError::InvalidSeating {
+                contest_id,
+                reason: format!(
+                    "expected {seat_count} seats, found {}",
+                    self.contest_slots.len()
+                ),
+            });
+        }
+
+        let mut seen = vec![false; seat_count];
+        for &slot in &self.contest_slots {
+            if slot >= seat_count {
+                return Err(ArenaError::InvalidSeating {
+                    contest_id,
+                    reason: format!("contest slot {slot} is outside 0..{seat_count}"),
+                });
+            }
+            if std::mem::replace(&mut seen[slot], true) {
+                return Err(ArenaError::InvalidSeating {
+                    contest_id,
+                    reason: format!("contest slot {slot} appears more than once"),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A stable identifier for one trial in one schedule.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TrialId {
-    pub matchup_id: MatchupId,
-    pub trial_index: usize,
+    pub contest_id: ContestId,
+    pub sample_index: usize,
+    pub seating_index: usize,
 }
 
 impl fmt::Display for TrialId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}:t{}", self.matchup_id, self.trial_index)
+        write!(
+            formatter,
+            "{}:s{}:p{}",
+            self.contest_id, self.sample_index, self.seating_index
+        )
     }
 }
 
 /// Deterministic input supplied to a match simulator for one trial.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrialContext {
     pub id: TrialId,
-    pub seed: u64,
-    /// The first player is seat 0 and the second is seat 1.
-    pub starting_seat: usize,
+    pub sample_seed: u64,
+    /// Seat order for this game. Seat zero acts first.
+    pub seating: Seating,
 }
 
 impl TrialContext {
     /// Derives a deterministic named RNG stream without consuming another
     /// subsystem's random state.
     pub fn stream_seed(&self, namespace: &str, stream_id: &str) -> u64 {
-        let namespace_seed = derive_seed(self.seed, stable_hash(namespace.as_bytes()));
+        let namespace_seed = derive_seed(self.sample_seed, stable_hash(namespace.as_bytes()));
         derive_seed(namespace_seed, stable_hash(stream_id.as_bytes()))
     }
 
@@ -114,7 +209,7 @@ impl TrialContext {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MatchResult {
+pub enum ContestResult {
     Winner { seat: usize },
     Draw,
 }
@@ -131,16 +226,16 @@ pub enum OutcomeReason {
 
 /// The model-independent result of a competitive trial.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MatchOutcome {
-    pub result: MatchResult,
+pub struct ContestOutcome {
+    pub result: ContestResult,
     pub turns: usize,
     pub reason: OutcomeReason,
 }
 
-impl MatchOutcome {
+impl ContestOutcome {
     pub fn winner(seat: usize, turns: usize, reason: OutcomeReason) -> Self {
         Self {
-            result: MatchResult::Winner { seat },
+            result: ContestResult::Winner { seat },
             turns,
             reason,
         }
@@ -148,7 +243,7 @@ impl MatchOutcome {
 
     pub fn draw(turns: usize, reason: OutcomeReason) -> Self {
         Self {
-            result: MatchResult::Draw,
+            result: ContestResult::Draw,
             turns,
             reason,
         }
@@ -158,19 +253,79 @@ impl MatchOutcome {
 /// Full information needed to reproduce and inspect one trial.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrialRecord {
-    pub matchup: Matchup,
+    pub contest: Contest,
     pub context: TrialContext,
-    pub outcome: MatchOutcome,
+    pub outcome: ContestOutcome,
+}
+
+/// A typed failure returned by a contest model.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SimulationError {
+    pub message: String,
+}
+
+impl SimulationError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for SimulationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SimulationError {}
+
+impl From<String> for SimulationError {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<&str> for SimulationError {
+    fn from(message: &str) -> Self {
+        Self::new(message)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ArenaError {
     DuplicateCompetitorId(String),
-    DuplicateMatchupId(MatchupId),
-    InvalidCompetitorIndex { matchup_id: MatchupId, index: usize },
-    InvalidWinnerSeat { trial_id: TrialId, seat: usize },
-    UnknownMatchup(MatchupId),
-    TooManyTrials,
+    DuplicateContestId(ContestId),
+    EmptyContest(ContestId),
+    DuplicateCompetitorInContest {
+        contest_id: ContestId,
+        index: usize,
+    },
+    InvalidCompetitorIndex {
+        contest_id: ContestId,
+        index: usize,
+    },
+    InvalidSeating {
+        contest_id: ContestId,
+        reason: String,
+    },
+    InvalidWinnerSeat {
+        trial_id: TrialId,
+        seat: usize,
+    },
+    InvalidReportShape {
+        contest_id: ContestId,
+        field: String,
+        expected: usize,
+        actual: usize,
+    },
+    UnknownContest(ContestId),
+    UnknownTrial(TrialId),
+    SimulationFailed {
+        trial_id: TrialId,
+        source: SimulationError,
+    },
+    TooManyGames,
     WorkerPool(String),
 }
 
@@ -180,21 +335,45 @@ impl fmt::Display for ArenaError {
             Self::DuplicateCompetitorId(id) => {
                 write!(formatter, "competitor ID {id:?} appears more than once")
             }
-            Self::DuplicateMatchupId(id) => {
-                write!(formatter, "matchup ID {id} appears more than once")
+            Self::DuplicateContestId(id) => {
+                write!(formatter, "contest ID {id} appears more than once")
             }
-            Self::InvalidCompetitorIndex { matchup_id, index } => write!(
+            Self::EmptyContest(id) => write!(formatter, "contest {id} has no competitors"),
+            Self::DuplicateCompetitorInContest { contest_id, index } => write!(
                 formatter,
-                "matchup {matchup_id} references missing competitor index {index}"
+                "contest {contest_id} references competitor index {index} more than once"
             ),
+            Self::InvalidCompetitorIndex { contest_id, index } => write!(
+                formatter,
+                "contest {contest_id} references missing competitor index {index}"
+            ),
+            Self::InvalidSeating { contest_id, reason } => {
+                write!(
+                    formatter,
+                    "contest {contest_id} has invalid seating: {reason}"
+                )
+            }
             Self::InvalidWinnerSeat { trial_id, seat } => {
                 write!(
                     formatter,
                     "trial {trial_id} returned invalid winner seat {seat}"
                 )
             }
-            Self::UnknownMatchup(id) => write!(formatter, "unknown matchup {id}"),
-            Self::TooManyTrials => write!(formatter, "scheduled trial count overflows usize"),
+            Self::InvalidReportShape {
+                contest_id,
+                field,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "contest {contest_id} report field {field} expected length {expected}, found {actual}"
+            ),
+            Self::UnknownContest(id) => write!(formatter, "unknown contest {id}"),
+            Self::UnknownTrial(id) => write!(formatter, "unknown trial {id}"),
+            Self::SimulationFailed { trial_id, source } => {
+                write!(formatter, "trial {trial_id} failed: {source}")
+            }
+            Self::TooManyGames => write!(formatter, "scheduled game count overflows usize"),
             Self::WorkerPool(message) => {
                 write!(formatter, "failed to build worker pool: {message}")
             }
@@ -202,7 +381,23 @@ impl fmt::Display for ArenaError {
     }
 }
 
-impl std::error::Error for ArenaError {}
+impl std::error::Error for ArenaError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SimulationFailed { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// Compatibility name for two-player callers. Storage is now dynamic.
+pub type MatchupId = ContestId;
+/// Compatibility name for two-player callers. Storage is now dynamic.
+pub type Matchup = Contest;
+/// Compatibility name for two-player callers.
+pub type MatchResult = ContestResult;
+/// Compatibility name for two-player callers.
+pub type MatchOutcome = ContestOutcome;
 
 pub(crate) fn validate_competitors(competitors: &[Competitor<'_>]) -> Result<(), ArenaError> {
     let mut ids: Vec<_> = competitors

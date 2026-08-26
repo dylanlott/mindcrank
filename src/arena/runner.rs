@@ -1,30 +1,30 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use rayon::prelude::*;
 
-use super::report::{MatchupAccumulator, build_standings};
+use super::report::{ContestAccumulator, build_standings};
 use super::{
-    ArenaError, ArenaReport, Competitor, MatchResult, MatchSimulator, Matchup, MatchupId, Schedule,
-    TrialContext, TrialId, TrialRecord, derive_seed, validate_competitors,
+    ArenaError, ArenaReport, Competitor, Contest, ContestId, ContestResult, ContestSimulator,
+    Schedule, Seating, TrialContext, TrialId, TrialRecord, derive_seed, validate_competitors,
 };
 
 /// Parallel Monte Carlo execution for an arena schedule.
 ///
-/// Trials are paired: trial `2n` puts seat 0 on the play and trial `2n + 1`
-/// puts seat 1 on the play, while both use the same underlying sample seed.
-/// This provides balanced play/draw results and common random numbers.
+/// Each sample is replayed through every cyclic seating for its contest. The
+/// sample seed is shared across those seatings, so each competitor receives the
+/// same random stream while its position changes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ArenaMonteCarlo {
-    pub trials_per_matchup: usize,
+    pub samples_per_contest: usize,
     pub seed: Option<u64>,
     /// Zero uses Rayon's global worker pool.
     pub workers: usize,
 }
 
 impl ArenaMonteCarlo {
-    pub fn new(trials_per_matchup: usize) -> Self {
+    pub fn new(samples_per_contest: usize) -> Self {
         Self {
-            trials_per_matchup,
+            samples_per_contest,
             seed: None,
             workers: 0,
         }
@@ -44,45 +44,59 @@ impl ArenaMonteCarlo {
         self,
         competitors: &[Competitor<'_>],
         schedule: &dyn Schedule,
-        simulator: &dyn MatchSimulator,
+        simulator: &dyn ContestSimulator,
     ) -> Result<ArenaReport, ArenaError> {
         validate_competitors(competitors)?;
-        let matchups = schedule.matchups(competitors)?;
-        validate_matchups(competitors, &matchups)?;
+        let contests = schedule.contests(competitors)?;
+        validate_contests(competitors, &contests)?;
 
-        let total_trials = matchups
-            .len()
-            .checked_mul(self.trials_per_matchup)
-            .ok_or(ArenaError::TooManyTrials)?;
+        let (work, total_games) = build_work(&contests, self.samples_per_contest)?;
         let master_seed = self.seed.unwrap_or_else(rand::random);
 
         let simulate = || {
-            (0..total_trials)
+            (0..total_games)
                 .into_par_iter()
                 .fold(
-                    || Ok(BTreeMap::<MatchupId, MatchupAccumulator>::new()),
-                    |accumulators, job_index| {
+                    || Ok(BTreeMap::<ContestId, ContestAccumulator>::new()),
+                    |accumulators, job_index| -> Result<_, ArenaError> {
                         let mut accumulators = accumulators?;
-                        let matchup_index = job_index / self.trials_per_matchup;
-                        let trial_index = job_index % self.trials_per_matchup;
-                        let matchup = &matchups[matchup_index];
+                        let work_index = work.partition_point(|item| item.end <= job_index);
+                        let item = &work[work_index];
+                        let local_index = job_index - item.start;
+                        let sample_index = local_index / item.seating_count;
+                        let seating_index = local_index % item.seating_count;
+                        let contest = &contests[item.contest_index];
                         let trial = execute_trial(
                             competitors,
                             simulator,
-                            matchup,
+                            contest,
                             master_seed,
-                            trial_index,
+                            TrialId {
+                                contest_id: contest.id,
+                                sample_index,
+                                seating_index,
+                            },
                         )?;
-                        accumulators.entry(matchup.id).or_default().record(&trial);
+                        accumulators
+                            .entry(contest.id)
+                            .or_insert_with(|| ContestAccumulator::new(contest.id, contest.len()))
+                            .record(&trial)?;
                         Ok(accumulators)
                     },
                 )
                 .reduce(
-                    || Ok(BTreeMap::<MatchupId, MatchupAccumulator>::new()),
-                    |left, right| {
+                    || Ok(BTreeMap::<ContestId, ContestAccumulator>::new()),
+                    |left, right| -> Result<_, ArenaError> {
                         let mut left = left?;
-                        for (matchup_id, accumulator) in right? {
-                            left.entry(matchup_id).or_default().merge(accumulator);
+                        for (contest_id, accumulator) in right? {
+                            match left.entry(contest_id) {
+                                Entry::Occupied(mut entry) => {
+                                    entry.get_mut().merge(accumulator)?;
+                                }
+                                Entry::Vacant(entry) => {
+                                    entry.insert(accumulator);
+                                }
+                            }
                         }
                         Ok(left)
                     },
@@ -99,21 +113,22 @@ impl ArenaMonteCarlo {
                 .install(simulate)?
         };
 
-        let reports: Vec<_> = matchups
+        let reports = contests
             .iter()
-            .map(|matchup| {
+            .map(|contest| {
                 accumulators
-                    .remove(&matchup.id)
-                    .unwrap_or_default()
-                    .into_report(matchup, competitors)
+                    .remove(&contest.id)
+                    .unwrap_or_else(|| ContestAccumulator::new(contest.id, contest.len()))
+                    .into_report(contest, competitors)
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         let standings = build_standings(competitors, &reports);
 
         Ok(ArenaReport {
             seed: master_seed,
-            trials_per_matchup: self.trials_per_matchup,
-            matchups: reports,
+            samples_per_contest: self.samples_per_contest,
+            games: total_games,
+            contests: reports,
             standings,
         })
     }
@@ -123,74 +138,118 @@ impl ArenaMonteCarlo {
         self,
         competitors: &[Competitor<'_>],
         schedule: &dyn Schedule,
-        simulator: &dyn MatchSimulator,
+        simulator: &dyn ContestSimulator,
         master_seed: u64,
         trial_id: TrialId,
     ) -> Result<TrialRecord, ArenaError> {
         validate_competitors(competitors)?;
-        let matchups = schedule.matchups(competitors)?;
-        validate_matchups(competitors, &matchups)?;
-        let matchup = matchups
+        let contests = schedule.contests(competitors)?;
+        validate_contests(competitors, &contests)?;
+        let contest = contests
             .iter()
-            .find(|matchup| matchup.id == trial_id.matchup_id)
-            .ok_or(ArenaError::UnknownMatchup(trial_id.matchup_id))?;
+            .find(|contest| contest.id == trial_id.contest_id)
+            .ok_or(ArenaError::UnknownContest(trial_id.contest_id))?;
 
-        execute_trial(
-            competitors,
-            simulator,
-            matchup,
-            master_seed,
-            trial_id.trial_index,
-        )
+        if trial_id.sample_index >= self.samples_per_contest
+            || trial_id.seating_index >= contest.len()
+        {
+            return Err(ArenaError::UnknownTrial(trial_id));
+        }
+
+        execute_trial(competitors, simulator, contest, master_seed, trial_id)
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ContestWork {
+    contest_index: usize,
+    start: usize,
+    end: usize,
+    seating_count: usize,
+}
+
+fn build_work(
+    contests: &[Contest],
+    samples_per_contest: usize,
+) -> Result<(Vec<ContestWork>, usize), ArenaError> {
+    let mut work = Vec::with_capacity(contests.len());
+    let mut next = 0_usize;
+    for (contest_index, contest) in contests.iter().enumerate() {
+        let games = samples_per_contest
+            .checked_mul(contest.len())
+            .ok_or(ArenaError::TooManyGames)?;
+        let end = next.checked_add(games).ok_or(ArenaError::TooManyGames)?;
+        work.push(ContestWork {
+            contest_index,
+            start: next,
+            end,
+            seating_count: contest.len(),
+        });
+        next = end;
+    }
+    Ok((work, next))
 }
 
 fn execute_trial(
     competitors: &[Competitor<'_>],
-    simulator: &dyn MatchSimulator,
-    matchup: &Matchup,
+    simulator: &dyn ContestSimulator,
+    contest: &Contest,
     master_seed: u64,
-    trial_index: usize,
+    id: TrialId,
 ) -> Result<TrialRecord, ArenaError> {
-    let id = TrialId {
-        matchup_id: matchup.id,
-        trial_index,
-    };
-    let matchup_seed = derive_seed(master_seed, matchup.id.0);
-    let sample_seed = derive_seed(matchup_seed, (trial_index / 2) as u64);
+    let contest_seed = derive_seed(master_seed, contest.id.0);
+    let sample_seed = derive_seed(contest_seed, id.sample_index as u64);
+    let seating = Seating::cyclic(contest.len(), id.seating_index);
+    seating.validate(contest.id, contest.len())?;
     let context = TrialContext {
         id,
-        seed: sample_seed,
-        starting_seat: trial_index % 2,
+        sample_seed,
+        seating,
     };
-    let outcome = simulator.simulate(competitors, matchup, context);
+    let outcome = simulator
+        .simulate(competitors, contest, &context)
+        .map_err(|source| ArenaError::SimulationFailed {
+            trial_id: id,
+            source,
+        })?;
 
-    if let MatchResult::Winner { seat } = outcome.result
-        && seat >= matchup.competitor_indices.len()
+    if let ContestResult::Winner { seat } = outcome.result
+        && seat >= contest.len()
     {
         return Err(ArenaError::InvalidWinnerSeat { trial_id: id, seat });
     }
 
     Ok(TrialRecord {
-        matchup: matchup.clone(),
+        contest: contest.clone(),
         context,
         outcome,
     })
 }
 
-fn validate_matchups(
+fn validate_contests(
     competitors: &[Competitor<'_>],
-    matchups: &[Matchup],
+    contests: &[Contest],
 ) -> Result<(), ArenaError> {
-    let mut ids = std::collections::BTreeSet::new();
-    for matchup in matchups {
-        if !ids.insert(matchup.id) {
-            return Err(ArenaError::DuplicateMatchupId(matchup.id));
+    let mut ids = BTreeSet::new();
+    for contest in contests {
+        if !ids.insert(contest.id) {
+            return Err(ArenaError::DuplicateContestId(contest.id));
         }
-        for index in matchup.competitor_indices {
+        if contest.is_empty() {
+            return Err(ArenaError::EmptyContest(contest.id));
+        }
+
+        let mut indices = BTreeSet::new();
+        for &index in &contest.competitor_indices {
             if index >= competitors.len() {
                 return Err(ArenaError::InvalidCompetitorIndex {
-                    matchup_id: matchup.id,
+                    contest_id: contest.id,
+                    index,
+                });
+            }
+            if !indices.insert(index) {
+                return Err(ArenaError::DuplicateCompetitorInContest {
+                    contest_id: contest.id,
                     index,
                 });
             }
