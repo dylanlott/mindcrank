@@ -28,10 +28,14 @@ pub struct Aggregate {
     pub avg_draws_after_opening: Option<f64>,
     pub opening_win_rate: f64,
     pub avg_opening_lands: f64,
+    /// Average cards retained after London-mulligan bottoming, across all trials.
+    pub avg_kept_hand_size: f64,
     /// Average among winning trials only.
     pub avg_turns_to_win: Option<f64>,
     /// Winning trials grouped by draws required. Misses are counted separately.
     pub distribution_draws_to_win: BTreeMap<usize, usize>,
+    /// Winning trials grouped by the turn on which they won. Misses are counted separately.
+    pub distribution_turns_to_win: BTreeMap<usize, usize>,
 }
 
 impl Default for Aggregate {
@@ -44,8 +48,10 @@ impl Default for Aggregate {
             avg_draws_after_opening: None,
             opening_win_rate: 0.0,
             avg_opening_lands: 0.0,
+            avg_kept_hand_size: 0.0,
             avg_turns_to_win: None,
             distribution_draws_to_win: BTreeMap::new(),
+            distribution_turns_to_win: BTreeMap::new(),
         }
     }
 }
@@ -61,10 +67,13 @@ impl Aggregate {
         let mut sum_winning_draws = 0;
         let mut sum_winning_turns = 0;
         let mut sum_opening_lands = 0;
+        let mut sum_kept = 0;
         let mut distribution = BTreeMap::new();
+        let mut turn_distribution = BTreeMap::new();
 
         for outcome in outcomes {
             sum_opening_lands += outcome.opening_lands;
+            sum_kept += outcome.kept;
             if outcome.opening_win {
                 opening_wins += 1;
             }
@@ -73,6 +82,9 @@ impl Aggregate {
                 sum_winning_draws += outcome.draws_after_opening;
                 sum_winning_turns += outcome.turns_to_win.unwrap_or_default();
                 *distribution.entry(outcome.draws_after_opening).or_insert(0) += 1;
+                if let Some(turn) = outcome.turns_to_win {
+                    *turn_distribution.entry(turn).or_insert(0) += 1;
+                }
             }
         }
 
@@ -88,9 +100,28 @@ impl Aggregate {
                 .map(|denominator| sum_winning_draws as f64 / denominator),
             opening_win_rate: opening_wins as f64 / trials as f64,
             avg_opening_lands: sum_opening_lands as f64 / trials as f64,
+            avg_kept_hand_size: sum_kept as f64 / trials as f64,
             avg_turns_to_win: winning_denominator
                 .map(|denominator| sum_winning_turns as f64 / denominator),
             distribution_draws_to_win: distribution,
+            distribution_turns_to_win: turn_distribution,
+        }
+    }
+
+    /// Number of trials that won on or before `turn`.
+    pub fn wins_by_turn(&self, turn: usize) -> usize {
+        self.distribution_turns_to_win
+            .range(..=turn)
+            .map(|(_, wins)| wins)
+            .sum()
+    }
+
+    /// Probability of a win on or before `turn` over all trials.
+    pub fn win_rate_by_turn(&self, turn: usize) -> f64 {
+        if self.trials == 0 {
+            0.0
+        } else {
+            self.wins_by_turn(turn) as f64 / self.trials as f64
         }
     }
 }

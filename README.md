@@ -20,6 +20,7 @@ MTG decks.
 - Reproducible results across worker counts when a seed is supplied
 - Explicit wins and misses instead of treating the simulation horizon as a win
 - A tag-based card and deck model
+- Strict two-axis Pareto comparisons with plot-ready scatter data
 
 ## Requirements
 
@@ -106,6 +107,51 @@ fewer cards. The averages cover winning trials only, so read them next to the
 win rate rather than alone. Real decks close the gap with tutors and draw
 spells — that is what the tag model and custom win conditions exist to express.
 
+## Pareto Deck Comparisons
+
+Compare named decklist mutations under one fixed simulation protocol with
+`compare_pareto`. Its two axes are cumulative `P(win by T_fast)` and
+`P(win by T_horizon)`. A candidate is omitted from the frontier only when a
+different candidate is at least as good on both axes and strictly better on one.
+The report retains every candidate and exposes `scatterplot()` data for a UI or
+CLI to render; mindcrank itself does not prescribe a renderer.
+
+```rust
+use mindcrank::{
+    Card, Deck, DeckCandidate, KOfTag, ParetoProtocol, Params, compare_pareto,
+};
+
+let glass_cannon = Deck::new(vec![Card::new("Win").with_tag("win"); 20]);
+let balanced = Deck::new(vec![Card::new("Win").with_tag("win"); 10]);
+let win = KOfTag::new("win", 1);
+
+let protocol = ParetoProtocol::from_params(
+    Params::new(&glass_cannon, &win),
+    4,  // early-win threshold
+    10, // simulation horizon and consistency threshold
+    100_000,
+    42, // shared seed for every candidate
+).unwrap();
+
+let report = compare_pareto(
+    &[
+        DeckCandidate::new("glass", "Glass cannon", &glass_cannon),
+        DeckCandidate::new("balanced", "Balanced", &balanced),
+    ],
+    protocol,
+).unwrap();
+
+for point in report.scatterplot().points {
+    println!("{}: ({:.1}%, {:.1}%)", point.label, point.x * 100.0, point.y * 100.0);
+}
+
+let csv = report.to_csv(false);
+println!("{}", csv);
+```
+
+See [`docs/pareto-frontier-spec.md`](docs/pareto-frontier-spec.md) for the
+evaluation-protocol contract, result semantics, and planned extensions.
+
 ## Arena Simulations
 
 The `arena` module runs deck plans through dynamic contests and a balanced seat rotation.
@@ -142,5 +188,5 @@ or a future turn-plan layer rather than being approximated by the core crate.
 
 ## Roadmap
 
-- [ ] Calculate and visualize Pareto frontiers for a given decklist
+- [x] Calculate Pareto frontiers for a controlled set of decklist variants
 - [ ] Create a leaderboard of decklists scored on their Pareto frontiers
