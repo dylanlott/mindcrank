@@ -1,5 +1,12 @@
 # 🤖 mindcrank
 
+```text
+▗▖  ▗▖▗▄▄▄▖▗▖  ▗▖▗▄▄▄  ▗▄▄▖▗▄▄▖  ▗▄▖ ▗▖  ▗▖▗▖ ▗▖
+▐▛▚▞▜▌  █  ▐▛▚▖▐▌▐▌  █▐▌   ▐▌ ▐▌▐▌ ▐▌▐▛▚▖▐▌▐▌▗▞▘
+▐▌  ▐▌  █  ▐▌ ▝▜▌▐▌  █▐▌   ▐▛▀▚▖▐▛▀▜▌▐▌ ▝▜▌▐▛▚▖ 
+▐▌  ▐▌▗▄█▄▖▐▌  ▐▌▐▙▄▄▀▝▚▄▄▖▐▌ ▐▌▐▌ ▐▌▐▌  ▐▌▐▌ ▐▌
+```
+
 `mindcrank` is a small Rust library for simulating focused Magic: The Gathering
 deck-building scenarios with Monte Carlo simulations.
 
