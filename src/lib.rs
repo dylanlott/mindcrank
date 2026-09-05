@@ -27,4 +27,4 @@ pub use mulligan::{
     BottomHeuristic, DefaultBottomHeuristic, KeepIf, KeepIfLandsBetween, KeepIfWinOrDecent,
     MulliganPolicy,
 };
-pub use win_condition::{AnyOf, KOfTag, TwoCardSet, WinCondition};
+pub use win_condition::{AnyOf, KOfTag, Piece, Route, TutorAwareWin, TwoCardSet, WinCondition};
